@@ -10,7 +10,10 @@ use bevy_ecs::{
     system::Resource,
     world::World,
 };
-use bevy_utils::{tracing::debug, HashMap};
+use bevy_utils::{
+    tracing::{debug, dispatcher, subscriber::NoSubscriber, warn},
+    HashMap,
+};
 use std::fmt::Debug;
 
 #[cfg(feature = "trace")]
@@ -62,6 +65,8 @@ pub struct App {
     /// A container of [`Stage`]s set to be run in a linear order.
     pub schedule: Schedule,
     sub_apps: HashMap<AppLabelId, SubApp>,
+    /// Whether or not the App has been run and/or updated yet.
+    pub has_run: bool,
 }
 
 /// Each `SubApp` has its own [`Schedule`] and [`World`], enabling a separation of concerns.
@@ -70,6 +75,22 @@ struct SubApp {
     runner: Box<dyn Fn(&mut World, &mut App)>,
 }
 
+impl Drop for App {
+    /// Gives a warning if the [`App`] is [`Drop`]ped without being run.
+    fn drop(&mut self) {
+        if !self.has_run {
+            let message = "You have not called `App::run` or `App::update`. Any systems and/or plugins added to this `App` will not run.";
+            dispatcher::get_default(|d| {
+                // If there is no `Subscriber`, `get_default` will return a no-op `Subscriber` called `NoSubscriber`
+                if d.is::<NoSubscriber>() {
+                    eprintln!("WARNING: {}", message);
+                } else {
+                    warn!(warning = message);
+                }
+            });
+        }
+    }
+}
 impl Default for App {
     fn default() -> Self {
         let mut app = App::empty();
@@ -105,6 +126,7 @@ impl App {
             schedule: Default::default(),
             runner: Box::new(run_once),
             sub_apps: HashMap::default(),
+            has_run: false,
         }
     }
 
@@ -120,6 +142,7 @@ impl App {
         for sub_app in self.sub_apps.values_mut() {
             (sub_app.runner)(&mut self.world, &mut sub_app.app);
         }
+        self.has_run = true;
     }
 
     /// Starts the application by calling the app's [runner function](Self::set_runner).
@@ -129,9 +152,9 @@ impl App {
     pub fn run(&mut self) {
         #[cfg(feature = "trace")]
         let _bevy_app_run_span = info_span!("bevy_app").entered();
-
         let mut app = std::mem::replace(self, App::empty());
         let runner = std::mem::replace(&mut app.runner, Box::new(run_once));
+        self.has_run = true;
         (runner)(app);
     }
 
